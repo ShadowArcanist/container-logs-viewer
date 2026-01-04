@@ -1,0 +1,15 @@
+services:
+  docker-logs-viewer:
+    image: ghcr.io/shadowarcanist/container-logs-viewer:latest
+    environment:
+      - SERVICE_URL_DLV_8080
+      - TZ=${TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - docker-logs-data:/data

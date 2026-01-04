@@ -1,0 +1,29 @@
+services:
+  docker-logs-viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/shadowarcanist/container-logs-viewer:latest
+    container_name: docker-logs-viewer
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - docker-logs-data:/data
+    environment:
+      - TZ=UTC
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  docker-logs-data:
+    driver: local
+
+networks:
+  default:
+    name: docker-logs-network
