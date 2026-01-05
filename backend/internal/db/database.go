@@ -260,6 +260,18 @@ func (s *SQLiteDB) GetAllContainers() ([]models.Container, error) {
 	return containers, nil
 }
 
+func (s *SQLiteDB) UpdateContainerStatus(id string, status string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `UPDATE containers SET status = ? WHERE id = ?`
+	_, err := s.db.Exec(query, status, id)
+	if err != nil {
+		return fmt.Errorf("failed to update container status: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteDB) UpdateContainerID(oldContainerID, newContainerID, newName string) error {
 	query := `UPDATE containers SET container_id = ?, container_name = ? WHERE container_id = ?`
 	_, err := s.db.Exec(query, newContainerID, newName, oldContainerID)
@@ -362,7 +374,7 @@ func (s *SQLiteDB) GetLogs(trackedContainerID string, limit int, before *time.Ti
 	}
 	defer rows.Close()
 
-	var logs []models.LogEntry
+	logs := make([]models.LogEntry, 0)
 	for rows.Next() {
 		var l models.LogEntry
 

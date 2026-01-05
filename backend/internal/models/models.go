@@ -7,7 +7,6 @@ type Container struct {
 	Alias         string `json:"alias" db:"alias"`
 	AddedAt       int64  `json:"addedAt" db:"added_at"`
 	SwappedAt     int64  `json:"swappedAt" db:"swapped_at"`
-	Uptime        int64  `json:"uptime" db:"-"`
 	Status        string `json:"status" db:"status"`
 	MaxPeriod     int64  `json:"maxPeriod" db:"max_period"`
 	MaxLines      int    `json:"maxLines" db:"max_lines"`

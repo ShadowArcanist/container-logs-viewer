@@ -128,8 +128,7 @@ export function useLogStream(intervalMs = 300) {
         const filters = new Set<LogLevel>(parsedFilters)
         dispatch({ type: "LOAD_FILTERS", filters })
       }
-    } catch (error) {
-      console.error("Failed to load filters:", error)
+    } catch {
     }
   }, [])
 

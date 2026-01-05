@@ -6,7 +6,6 @@ export interface TrackedContainer {
   containerName: string
   alias: string
   addedAt: number
-  uptime: number
   status: "running" | "stopped" | "exited" | "restarting" | "unknown"
   maxPeriod: number
   maxLines: number

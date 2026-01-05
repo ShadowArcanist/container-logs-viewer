@@ -213,6 +213,11 @@ type WSControlMessage struct {
 	Payload string `json:"payload"`
 }
 
+type WSStatusMessage struct {
+	Type   string `json:"type"`
+	Status string `json:"status"`
+}
+
 func NewLogMessage(log models.LogEntry) WSLogMessage {
 	return WSLogMessage{
 		Type:    "log",
@@ -253,5 +258,12 @@ func NewErrorMessage(err string) WSControlMessage {
 	return WSControlMessage{
 		Type:    "error",
 		Payload: err,
+	}
+}
+
+func NewStatusMessage(status string) WSStatusMessage {
+	return WSStatusMessage{
+		Type:   "status",
+		Status: status,
 	}
 }

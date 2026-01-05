@@ -74,11 +74,11 @@ export function LogDetailModal({ log, open, onOpenChange, syntaxHighlight = fals
             </div>
             <div className="p-3 rounded bg-black/40 border border-white/5 w-full">
               {syntaxHighlight ? (
-                <div className="w-full break-words">
+                <div className="w-full break-all">
                   <SyntaxHighlight code={log.message} />
                 </div>
               ) : (
-                <pre className="whitespace-pre-wrap break-words">
+                <pre className="whitespace-pre-wrap break-all">
                   {log.message}
                 </pre>
               )}

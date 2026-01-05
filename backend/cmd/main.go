@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -26,7 +25,6 @@ func main() {
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Printf("[backend] Starting Docker Logs Viewer...")
 
 	database, err := db.NewSQLiteDB(*dbPath)
 	if err != nil {
@@ -40,15 +38,12 @@ func main() {
 
 	dockerClient, err := docker.NewDockerClient()
 	if err != nil {
-		log.Printf("[backend] Warning: Failed to create docker client: %v", err)
-		log.Printf("[backend] Running in mock mode - Docker socket may not be accessible", err)
+		log.Printf("[backend] Failed to create docker client: %v", err)
 	} else {
 		defer dockerClient.Close()
 
 		if err := dockerClient.PingDocker(context.Background()); err != nil {
-			log.Printf("[backend] Warning: Docker daemon not accessible: %v", err)
-		} else {
-			log.Printf("[backend] Connected to Docker daemon at %s", dockerClient.DaemonHost())
+			log.Printf("[backend] Docker daemon not accessible: %v", err)
 		}
 	}
 
@@ -158,9 +153,4 @@ func (h *staticFileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFile(w, r, h.indexFile)
-}
-
-func init() {
-	fmt.Println("Docker Logs Viewer - Backend Service")
-	fmt.Println("=====================================")
 }

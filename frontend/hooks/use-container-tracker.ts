@@ -37,8 +37,7 @@ export function useContainerTracker() {
       if (savedSelected) {
         setSelectedContainerId(savedSelected)
       }
-    } catch (error) {
-      console.error("Failed to load containers:", error)
+    } catch {
     } finally {
       setLoading(false)
     }

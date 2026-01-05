@@ -142,11 +142,10 @@ export function useBackendAPI() {
           const msg: WSMessage = JSON.parse(event.data)
           if (msg.type === "log") {
             onLog(msg.payload)
-          } else if (msg.type === "error" && onError) {
+          } else           if (msg.type === "error" && onError) {
             onError(msg.payload as unknown as string)
           }
         } catch {
-          console.error("[frontend] Failed to parse WebSocket message")
         }
       }
 

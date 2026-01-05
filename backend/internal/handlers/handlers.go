@@ -28,12 +28,9 @@ type Server struct {
 }
 
 func getContainerBasePrefix(name string) string {
-	matched := regexp.MustCompile(`^(.+?)-?\d*$`).FindStringSubmatch(name)
-	if len(matched) > 1 {
-		base := matched[1]
-		if strings.HasSuffix(base, "-") {
-			return base
-		}
+	parts := strings.Split(name, "-")
+	if len(parts) > 1 && parts[len(parts)-1] != "" {
+		base := strings.Join(parts[:len(parts)-1], "-")
 		return base + "-"
 	}
 	return name + "-"
@@ -51,11 +48,12 @@ func NewServer(database *db.SQLiteDB, dockerClient *docker.DockerClient, staticP
 func (s *Server) Run(ctx context.Context) {
 	go s.hub.Run()
 	go s.containerWatcher(ctx)
+	go s.logCollectionWatcher(ctx)
 	log.Printf("[backend] Server initialized")
 }
 
 func (s *Server) containerWatcher(ctx context.Context) {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -64,6 +62,19 @@ func (s *Server) containerWatcher(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.checkContainerUpdates(ctx)
+		}
+	}
+}
+
+func (s *Server) logCollectionWatcher(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 			s.collectLogsForAllContainers(ctx)
 		}
 	}
@@ -82,6 +93,24 @@ func (s *Server) collectLogsForAllContainers(ctx context.Context) {
 }
 
 func (s *Server) collectLogsForContainer(ctx context.Context, container models.Container) {
+	currentContainer, err := s.docker.FindContainerByName(ctx, container.ContainerName)
+	if err != nil {
+		log.Printf("[backend] Failed to find container by name %s: %v", container.ContainerName, err)
+	}
+
+	currentContainerID := container.ContainerID
+	if currentContainer != nil && currentContainer.ID != container.ContainerID {
+		log.Printf("[backend] Container ID changed for %s: %s -> %s", container.ContainerName, container.ContainerID[:12], currentContainer.ID[:12])
+		oldID := container.ContainerID
+		container.ContainerID = currentContainer.ID
+		currentContainerID = currentContainer.ID
+
+		_, err := s.db.SwapContainer(oldID, currentContainer.ID, container.ContainerName)
+		if err != nil {
+			log.Printf("[backend] Failed to update container ID: %v", err)
+		}
+	}
+
 	lastLogTs, err := s.db.GetLastLogTimestamp(container.ID)
 	if err != nil {
 		log.Printf("[backend] Failed to get last log timestamp: %v", err)
@@ -92,29 +121,26 @@ func (s *Server) collectLogsForContainer(ctx context.Context, container models.C
 		since = time.Unix(0, lastLogTs)
 	}
 
-	logsChan, err := s.docker.StreamContainerLogs(ctx, container.ContainerID, since)
+	logsChan, err := s.docker.StreamContainerLogs(ctx, currentContainerID, since)
 	if err != nil {
 		log.Printf("[backend] Failed to start log stream for %s: %v", container.ContainerName, err)
 		return
 	}
 
-	count := 0
 	var lastTimestamp int64
 	for logEntry := range logsChan {
 		entry := s.parseLogEntry(logEntry.Log, container.ContainerID, logEntry.Timestamp)
 		entry.TrackedContainerID = container.ID
+		if entry.Message == "" {
+			continue
+		}
 		if err := s.db.AddLog(ctx, &entry); err != nil {
-			log.Printf("[backend] Failed to persist log: %v", err)
+			log.Printf("[backend] Failed to persist log for %s: %v", container.ContainerName, err)
 		} else {
-			count++
 			if entry.Timestamp > lastTimestamp {
 				lastTimestamp = entry.Timestamp
 			}
 			s.hub.BroadcastToContainer(container.ID, websocket.NewLogMessage(entry))
-		}
-
-		if container.MaxPeriod > 0 || container.MaxLines > 0 {
-			s.db.RetentionManager().ApplyRetentionForContainer(ctx, container.ID, container.MaxPeriod, container.MaxLines)
 		}
 	}
 	if lastTimestamp > 0 {
@@ -122,8 +148,6 @@ func (s *Server) collectLogsForContainer(ctx context.Context, container models.C
 			log.Printf("[backend] Failed to update last log timestamp: %v", err)
 		}
 	}
-
-	log.Printf("[backend] Collected %d new logs from %s (lastTs=%d)", count, container.ContainerName, lastTimestamp)
 }
 
 func (s *Server) checkContainerUpdates(ctx context.Context) {
@@ -149,46 +173,57 @@ func (s *Server) checkContainerUpdates(ctx context.Context) {
 		dockerMap[c.ID] = c.ID
 	}
 
-	statusChanged := false
-	for i := range containers {
-		container := &containers[i]
-		inspectCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		dockerContainer, err := s.docker.InspectContainer(inspectCtx, container.ContainerID)
-		cancel()
-
-		if err != nil {
-			container.Status = "unknown"
-			statusChanged = true
-			continue
-		}
-
-		container.Status = dockerContainer.State.Status
-		if dockerContainer.State.StartedAt != "" {
-			started, err := time.Parse(time.RFC3339, dockerContainer.State.StartedAt)
-			if err == nil {
-				container.Uptime = int64(time.Now().Sub(started).Seconds())
-			}
-		}
-		statusChanged = true
-	}
-
-	if statusChanged {
-		s.hub.Broadcast(websocket.NewContainersMessage(containers))
-	}
-
+	swappedContainers := make(map[string]bool)
 	for _, dbContainer := range containers {
 		if _, exists := dockerMap[dbContainer.ContainerID]; !exists {
-			log.Printf("[backend] Container %s (%s) no longer exists, will check for recreation",
-				dbContainer.ContainerName, dbContainer.ContainerID)
+			if newID, exists := dockerMap[dbContainer.ContainerName]; exists {
+				oldID := dbContainer.ContainerID
+				oldLastLogTs, err := s.db.SwapContainer(dbContainer.ContainerID, newID, dbContainer.ContainerName)
+				if err != nil {
+					log.Printf("[backend] Failed to swap container: %v", err)
+					continue
+				}
+
+				swapTimestamp := time.Now().UnixNano()
+				if oldLastLogTs > 0 {
+					swapTimestamp = oldLastLogTs + 1
+				}
+				systemLog := models.LogEntry{
+					ID:                 uuid.New().String(),
+					TrackedContainerID: dbContainer.ID,
+					ContainerID:        newID,
+					Timestamp:          swapTimestamp,
+					Message:            fmt.Sprintf("[SYSTEM] Container swapped from %s to %s", oldID[:12], newID[:12]),
+				}
+				if err := s.db.AddLog(ctx, &systemLog); err != nil {
+					log.Printf("[backend] Failed to add system log: %v", err)
+				}
+				s.hub.BroadcastToContainer(dbContainer.ID, websocket.NewContainerSwappedMessage(newID, dbContainer.ContainerName))
+
+				updatedContainer, err := s.db.GetContainerByID(dbContainer.ID)
+				if err == nil && updatedContainer != nil {
+					bgCtx := context.Background()
+					go s.collectLogsForContainer(bgCtx, *updatedContainer)
+				}
+
+				logs, err := s.db.GetLogs(dbContainer.ID, 1000, nil)
+				if err != nil {
+					log.Printf("[backend] Failed to fetch logs after swap: %v", err)
+				} else {
+					s.hub.BroadcastToContainer(dbContainer.ID, websocket.NewLogsBatchMessage(logs))
+				}
+				swappedContainers[dbContainer.ID] = true
+				continue
+			}
 
 			basePrefix := getContainerBasePrefix(dbContainer.ContainerName)
 			for name, id := range dockerMap {
 				if strings.HasPrefix(name, basePrefix) {
-					log.Printf("[backend] Found recreated container: %s -> %s", dbContainer.ContainerID, id)
 					oldID := dbContainer.ContainerID
 					oldLastLogTs, err := s.db.SwapContainer(dbContainer.ContainerID, id, name)
 					if err != nil {
 						log.Printf("[backend] Failed to swap container: %v", err)
+						continue
 					}
 
 					swapTimestamp := time.Now().UnixNano()
@@ -207,16 +242,63 @@ func (s *Server) checkContainerUpdates(ctx context.Context) {
 					}
 					s.hub.BroadcastToContainer(dbContainer.ID, websocket.NewContainerSwappedMessage(id, name))
 
+					updatedContainer, err := s.db.GetContainerByID(dbContainer.ID)
+					if err == nil && updatedContainer != nil {
+						bgCtx := context.Background()
+						go s.collectLogsForContainer(bgCtx, *updatedContainer)
+					}
+
 					logs, err := s.db.GetLogs(dbContainer.ID, 1000, nil)
 					if err != nil {
 						log.Printf("[backend] Failed to fetch logs after swap: %v", err)
 					} else {
 						s.hub.BroadcastToContainer(dbContainer.ID, websocket.NewLogsBatchMessage(logs))
 					}
+					swappedContainers[dbContainer.ID] = true
 					break
 				}
 			}
 		}
+	}
+
+	if len(swappedContainers) > 0 {
+		containers, err = s.db.GetAllContainers()
+		if err != nil {
+			log.Printf("[backend] Failed to get containers after swap: %v", err)
+			return
+		}
+	}
+
+	statusChanged := false
+	for i := range containers {
+		container := &containers[i]
+		inspectCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+		dockerContainer, err := s.docker.InspectContainer(inspectCtx, container.ContainerID)
+		cancel()
+
+		if err != nil {
+			if container.Status != "unknown" {
+				container.Status = "unknown"
+				statusChanged = true
+				if err := s.db.UpdateContainerStatus(container.ID, "unknown"); err != nil {
+					log.Printf("[backend] Failed to update container status: %v", err)
+				}
+			}
+			continue
+		}
+
+		newStatus := dockerContainer.State.Status
+		if container.Status != newStatus {
+			container.Status = newStatus
+			statusChanged = true
+			if err := s.db.UpdateContainerStatus(container.ID, newStatus); err != nil {
+				log.Printf("[backend] Failed to update container status: %v", err)
+			}
+		}
+	}
+
+	if statusChanged {
+		s.hub.Broadcast(websocket.NewContainersMessage(containers))
 	}
 }
 
@@ -294,6 +376,9 @@ func (s *Server) HandleAddContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bgCtx := context.Background()
+	go s.collectLogsForContainer(bgCtx, *addedContainer)
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models.AddContainerResponse{
 		Container: *addedContainer,
@@ -318,16 +403,17 @@ func (s *Server) HandleListContainers(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			container.Status = "unknown"
+			if err := s.db.UpdateContainerStatus(container.ID, "unknown"); err != nil {
+				log.Printf("[backend] Failed to update container status: %v", err)
+			}
 			continue
 		}
 
-		container.Status = dockerContainer.State.Status
-		if dockerContainer.State.StartedAt != "" {
-			started, err := time.Parse(time.RFC3339, dockerContainer.State.StartedAt)
-			if err != nil {
-				log.Printf("[backend] Failed to parse StartedAt '%s': %v", dockerContainer.State.StartedAt, err)
-			} else {
-				container.Uptime = int64(time.Now().Sub(started).Seconds())
+		newStatus := dockerContainer.State.Status
+		if container.Status != newStatus {
+			container.Status = newStatus
+			if err := s.db.UpdateContainerStatus(container.ID, newStatus); err != nil {
+				log.Printf("[backend] Failed to update container status: %v", err)
 			}
 		}
 	}
@@ -392,13 +478,11 @@ func (s *Server) HandleUpdateContainer(w http.ResponseWriter, r *http.Request) {
 	dockerContainer, err := s.docker.InspectContainer(inspectCtx, container.ContainerID)
 	cancel()
 	if err == nil {
-		container.Status = dockerContainer.State.Status
-		if dockerContainer.State.StartedAt != "" {
-			started, err := time.Parse(time.RFC3339, dockerContainer.State.StartedAt)
-			if err != nil {
-				log.Printf("[backend] Failed to parse StartedAt '%s': %v", dockerContainer.State.StartedAt, err)
-			} else {
-				container.Uptime = int64(time.Now().Sub(started).Seconds())
+		newStatus := dockerContainer.State.Status
+		if container.Status != newStatus {
+			container.Status = newStatus
+			if err := s.db.UpdateContainerStatus(container.ID, newStatus); err != nil {
+				log.Printf("[backend] Failed to update container status: %v", err)
 			}
 		}
 	}
@@ -516,6 +600,9 @@ func (s *Server) HandleStreamLogs(w http.ResponseWriter, r *http.Request) {
 	for logEntry := range logsChan {
 		entry := s.parseLogEntry(logEntry.Log, container.ContainerID, logEntry.Timestamp)
 		entry.TrackedContainerID = container.ID
+		if entry.Message == "" {
+			continue
+		}
 		s.hub.SendToClient(client, websocket.NewLogMessage(entry))
 
 		if err := s.db.AddLog(r.Context(), &entry); err != nil {
@@ -539,9 +626,14 @@ func (s *Server) parseLogEntry(logLine, containerID string, timestamp time.Time)
 	if idx > 0 && idx < 50 {
 		tsStr := message[:idx]
 		if _, err := time.Parse(time.RFC3339Nano, tsStr); err == nil {
-			message = strings.TrimSpace(message[idx+1:])
+			remaining := strings.TrimSpace(message[idx+1:])
+			if remaining != "" {
+				message = remaining
+			}
 		}
 	}
+
+	message = stripANSIColors(message)
 
 	entry := models.LogEntry{
 		ID:          uuid.New().String(),
@@ -551,6 +643,14 @@ func (s *Server) parseLogEntry(logLine, containerID string, timestamp time.Time)
 	}
 
 	return entry
+}
+
+func stripANSIColors(s string) string {
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	s = ansi.ReplaceAllString(s, "")
+	ansiPartial := regexp.MustCompile(`\[[0-9;]*m`)
+	s = ansiPartial.ReplaceAllString(s, "")
+	return s
 }
 
 func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
@@ -640,9 +740,18 @@ func (s *Server) sendContainersUpdate(client *websocket.Client) {
 		inspectCancel()
 		if err != nil {
 			container.Status = "unknown"
+			if err := s.db.UpdateContainerStatus(container.ID, "unknown"); err != nil {
+				log.Printf("[backend] Failed to update container status: %v", err)
+			}
 			continue
 		}
-		container.Status = dockerContainer.State.Status
+		newStatus := dockerContainer.State.Status
+		if container.Status != newStatus {
+			container.Status = newStatus
+			if err := s.db.UpdateContainerStatus(container.ID, newStatus); err != nil {
+				log.Printf("[backend] Failed to update container status: %v", err)
+			}
+		}
 	}
 
 	msg := websocket.NewContainersMessage(containers)

@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/shadowarcanist/container-logs-viewer:latest
+    # image: ghcr.io/shadowarcanist/container-logs-viewer:latest
     container_name: docker-logs-viewer
     ports:
       - "8080:8080"

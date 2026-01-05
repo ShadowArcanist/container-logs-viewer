@@ -52,9 +52,8 @@ export function SyntaxHighlight({ code, language = "json", className = "" }: Syn
         })
         setHighlightedCode(html)
         setLoading(false)
-      } catch (error) {
+      } catch {
         if (!cancelled) {
-          console.error("Failed to highlight code:", error)
           setLoading(false)
         }
       }

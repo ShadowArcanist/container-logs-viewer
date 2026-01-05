@@ -56,11 +56,10 @@ func (r *RetentionManager) ApplyRetentionForContainer(ctx context.Context, conta
 		return nil
 	}
 
-	var removed int64
 	var err error
 
 	if maxLines > 0 {
-		removed, err = r.enforceLineLimit(ctx, containerID, maxLines)
+		_, err = r.enforceLineLimit(ctx, containerID, maxLines)
 		if err != nil {
 			return fmt.Errorf("failed to enforce line limit: %w", err)
 		}
@@ -68,15 +67,10 @@ func (r *RetentionManager) ApplyRetentionForContainer(ctx context.Context, conta
 
 	if maxPeriod > 0 {
 		cutoff := time.Now().Unix() - maxPeriod
-		removed2, err := r.enforceTimeLimit(ctx, containerID, cutoff)
+		_, err = r.enforceTimeLimit(ctx, containerID, cutoff)
 		if err != nil {
 			return fmt.Errorf("failed to enforce time limit: %w", err)
 		}
-		removed += removed2
-	}
-
-	if removed > 0 {
-		log.Printf("[backend] Cleaned %d old log entries for container %s", removed, containerID)
 	}
 
 	return nil
@@ -158,20 +152,11 @@ func (r *RetentionManager) applyRetentionPolicies(ctx context.Context) error {
 }
 
 func (r *RetentionManager) CleanupOrphanedLogs(ctx context.Context) error {
-	result, err := r.db.ExecContext(ctx,
+	_, err := r.db.ExecContext(ctx,
 		`DELETE FROM logs WHERE tracked_container_id NOT IN (SELECT id FROM containers)`,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to cleanup orphaned logs: %w", err)
-	}
-
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if affected > 0 {
-		log.Printf("[backend] Cleaned %d orphaned log entries", affected)
 	}
 
 	return nil

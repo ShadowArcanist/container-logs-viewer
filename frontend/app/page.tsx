@@ -360,7 +360,6 @@ export default function NetworkAnalyzerPage() {
           }
           return
         }
-        console.log("[frontend] Retrying containers WS connection...")
         startContainersWs()
       }, 10000)
     }
@@ -498,15 +497,14 @@ export default function NetworkAnalyzerPage() {
             message: l.message,
           })) })
         } else if (msg.type === "container_swapped") {
-          console.log("[frontend] Container swapped to:", msg.newContainerName, msg.newContainerId)
           fetchContainers()
           toast({
             title: "Container swapped",
             description: `Container switched to ${msg.newContainerName}`,
           })
         }
-      } catch {
-        console.error("[frontend] Failed to parse log message")
+      } catch (err) {
+        console.error("[frontend] Failed to parse log message:", err, "Data:", event.data)
       }
     }
 
@@ -523,7 +521,6 @@ export default function NetworkAnalyzerPage() {
 
       if (logsPollingRef.current) return
 
-      console.log("[frontend] Log WS closed, code:", event.code, "reason:", event.reason)
       startLogsPolling(containerId)
 
       if (logWsRetryRef.current) return
@@ -536,7 +533,6 @@ export default function NetworkAnalyzerPage() {
           }
           return
         }
-        console.log("[frontend] Retrying logs WS connection...")
         startLogWs(containerId)
       }, 10000)
     }
@@ -601,8 +597,7 @@ export default function NetworkAnalyzerPage() {
         const parsed = JSON.parse(saved) as Partial<Settings>
         setSettings((prev) => ({ ...prev, ...parsed }))
       }
-    } catch (error) {
-      console.error("Failed to load settings:", error)
+    } catch {
     }
   }, [])
 
@@ -617,8 +612,7 @@ export default function NetworkAnalyzerPage() {
   useEffect(() => {
     try {
       localStorage.setItem("syntax-highlight", JSON.stringify(syntaxHighlight))
-    } catch (error) {
-      console.error("Failed to save syntax highlight preference:", error)
+    } catch {
     }
   }, [syntaxHighlight])
 

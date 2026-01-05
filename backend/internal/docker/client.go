@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 )
 
@@ -54,7 +56,7 @@ func (d *DockerClient) ListContainers(ctx context.Context) ([]types.Container, e
 		return nil, fmt.Errorf("docker client not initialized")
 	}
 
-	containers, err := d.cli.ContainerList(ctx, types.ContainerListOptions{All: true})
+	containers, err := d.cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list containers: %w", err)
 	}
@@ -105,7 +107,7 @@ func (d *DockerClient) StreamContainerLogs(ctx context.Context, containerID stri
 	go func() {
 		defer close(logsChan)
 
-		opts := types.ContainerLogsOptions{
+		opts := container.LogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 			Follow:     true,
@@ -119,6 +121,7 @@ func (d *DockerClient) StreamContainerLogs(ctx context.Context, containerID stri
 
 		reader, err := d.cli.ContainerLogs(ctx, containerID, opts)
 		if err != nil {
+			log.Printf("[backend] ContainerLogs error for %s: %v", containerID, err)
 			return
 		}
 		defer reader.Close()
@@ -134,11 +137,13 @@ func (d *DockerClient) StreamContainerLogs(ctx context.Context, containerID stri
 					return
 				}
 				if err != nil {
+					log.Printf("[backend] Log stream error for %s: %v", containerID, err)
 					return
 				}
 
 				lineStr := string(line)
 				timestamp, cleanLog := parseDockerTimestamp(lineStr)
+
 				if cleanLog != "" {
 					logsChan <- LogMessage{
 						Container: containerID,
@@ -194,6 +199,10 @@ func parseDockerTimestamp(line string) (time.Time, string) {
 			message := strings.TrimSpace(line[idx+1:])
 			return ts, message
 		}
+	}
+
+	if _, err := time.Parse(time.RFC3339Nano, line); err == nil {
+		return time.Now(), ""
 	}
 
 	return time.Now(), line
